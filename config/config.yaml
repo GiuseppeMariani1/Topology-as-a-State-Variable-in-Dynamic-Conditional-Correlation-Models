@@ -55,3 +55,4 @@ paths:
   landscape_grid: data/processed/landscape_grid.npy
   permutation_test: data/processed/permutation_test_results.npy        # already there
   permutation_test_lpnorm: data/processed/permutation_test_lpnorm_results.npy   # add this
+  permutation_test_lpnorm_reg: data/processed/permutation_test_lpnorm_reg_results.npy

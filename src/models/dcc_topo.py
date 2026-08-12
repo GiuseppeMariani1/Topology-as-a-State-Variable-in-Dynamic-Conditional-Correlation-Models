@@ -41,12 +41,6 @@ def dcc_topo_recursion_batched(z_t, a_seq, b_seq, Q_bar):
     driving them). This is the GPU-friendly shape for permutation tests
     (B = shuffled feature sets) and lambda grid search (B = lambda values).
 
-    The recursion over t is inherently sequential (Q_t depends on Q_{t-1})
-    and can't be parallelised away -- what batching buys you is doing all
-    B model's work *within* each timestep as one vectorised GPU op instead
-    of B separate Python-level model runs (whether looped or spread across
-    CPU processes).
-
     Args:
         z_t   : (T, N)     -- shared across the batch
         a_seq : (B, T)
@@ -66,8 +60,6 @@ def dcc_topo_recursion_batched(z_t, a_seq, b_seq, Q_bar):
     Q_seq = torch.zeros(B, T, N, N, dtype=dtype, device=device)
     Q_seq[:, 0] = Q_t
 
-    # z_t is shared across the batch, so its outer products only need
-    # computing once (not once per batch element).
     z_outer_seq = torch.einsum('ti,tj->tij', z_t, z_t)  # (T, N, N)
     Q_bar_b = Q_bar.unsqueeze(0)  # (1, N, N), broadcasts over batch
 
@@ -98,18 +90,13 @@ class TopoDCC(nn.Module):
         super().__init__()
         self.w_a = nn.Parameter(torch.randn(n_features) * 0.01)
         self.w_b = nn.Parameter(torch.randn(n_features) * 0.01)
-        # Biases initialised to reproduce baseline DCC values
-        # sigmoid(-3.5) ≈ 0.03  ≈ baseline a
-        # sigmoid(2.9)  ≈ 0.95  ≈ baseline b
         self.bias_a = nn.Parameter(torch.tensor(-3.5))
         self.bias_b = nn.Parameter(torch.tensor(2.9))
 
     def forward(self, X_t):
-        # Independent sigmoids — a and b no longer compete via softmax
         a_raw = torch.sigmoid(X_t @ self.w_a + self.bias_a)
         b_raw = torch.sigmoid(X_t @ self.w_b + self.bias_b)
 
-        # Soft constraint: rescale only when a+b would exceed 0.9998
         total = a_raw + b_raw + 1e-6
         exceed = (total > 0.9998).float()
         a_t = a_raw * (1 - exceed) + a_raw * (0.9998 / total) * exceed
@@ -123,10 +110,6 @@ class TopoDCCBatched(nn.Module):
     B independent TopoDCC models trained simultaneously as one batched
     tensor op. Same math as TopoDCC.forward, just with an extra leading
     batch dimension on every parameter and an einsum instead of @.
-
-    Use this + dcc_topo_recursion_batched together for the GPU path in
-    permutation testing (B = shuffled feature sets) and lambda grid
-    search (B = lambda values) — see those modules for usage.
     """
     def __init__(self, n_features, batch_size):
         super().__init__()
@@ -137,13 +120,6 @@ class TopoDCCBatched(nn.Module):
         self.bias_b = nn.Parameter(torch.full((batch_size,), 2.9))
 
     def forward(self, X_t):
-        """
-        X_t: (B, T, n_features) -- each batch element can have its own
-        feature matrix (e.g. a different shuffle), or the same one
-        repeated B times (e.g. lambda search over shared features).
-
-        Returns a_seq, b_seq: (B, T)
-        """
         a_raw = torch.sigmoid(
             torch.einsum('btf,bf->bt', X_t, self.w_a) + self.bias_a.unsqueeze(1)
         )
@@ -210,25 +186,6 @@ def fit_dcc_topo_batched(z_t, X_t_batch, n_iter=500, lr=0.01,
     """
     Fit B independent TopoDCC models simultaneously as one batched GPU
     (or CPU) computation, instead of B separate process-pool workers.
-
-    Args:
-        z_t         : (T, N) torch tensor, GARCH residuals -- shared
-                      across the whole batch (the actual return series
-                      doesn't change; only the driving features do).
-        X_t_batch   : (B, T, n_features) torch tensor -- already
-                      normalised. Each batch slice can be a different
-                      feature-row shuffle (permutation test) or the
-                      same features repeated B times (lambda search).
-        lambda_l2   : optional (B,) tensor/array of per-batch-element
-                      L2 penalty strengths, e.g. for a lambda grid
-                      search. None (default) means unregularised, i.e.
-                      equivalent to B independent dcc_topo fits.
-        device      : torch.device; defaults to CUDA if available.
-
-    Returns:
-        model      : the fitted TopoDCCBatched (B models' worth of params)
-        ll_final   : (B,) numpy array, final log-likelihood per batch item
-        ll_history : list of (B,) numpy arrays, one per iteration
     """
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     z_t = z_t.to(device)
@@ -275,7 +232,7 @@ def fit_dcc_topo_batched(z_t, X_t_batch, n_iter=500, lr=0.01,
 
 def compute_r2(a_seq, b_seq, X_t_np):
     """
-    R² of topology features explaining variation in a_t and b_t.
+    R^2 of topology features explaining variation in a_t and b_t.
     Uses simple OLS on the normalised features.
     """
     from sklearn.linear_model import LinearRegression
@@ -289,42 +246,19 @@ def compute_r2(a_seq, b_seq, X_t_np):
     r2_a = reg_a.score(X_t_np, a_np)
     r2_b = reg_b.score(X_t_np, b_np)
 
-    print(f"  R² (X_t → a_t): {r2_a:.4f} ({r2_a*100:.1f}%)")
-    print(f"  R² (X_t → b_t): {r2_b:.4f} ({r2_b*100:.1f}%)")
+    print(f"  R2 (X_t -> a_t): {r2_a:.4f} ({r2_a*100:.1f}%)")
+    print(f"  R2 (X_t -> b_t): {r2_b:.4f} ({r2_b*100:.1f}%)")
 
     return r2_a, r2_b
 
 if __name__ == "__main__":
     import os
-    import sys
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-    from src.data.loader import load_config
+    from src.data.loader import load_aligned_data, load_config, standardize_features
 
     config = load_config()
     model_cfg = config['models']['topo']
-    paths = config['paths']
 
-    
-    garch_residuals = pd.read_parquet(paths['garch_residuals'])
-
-    # L^p-norm reduced features (literature-matched, H1-only)
-    # the raw 186-column landscape file used in the run that failed the
-    # permutation test. 9 columns: lh1_k0_norm, lh1_k1_norm, lh1_k2_norm
-    # + the 6 scalar features (betti_1, entropy_h0, entropy_h1,
-    # max_persistence, total_persistence, wasserstein).
-    tda_features = pd.read_parquet(
-        paths.get('tda_features_lpnorm', 'data/processed/tda_features_lpnorm.parquet')
-    )
-
-    common = garch_residuals.index.intersection(tda_features.index)
-    garch_residuals = garch_residuals.loc[common]
-    tda_features = tda_features.loc[common]
-
-    assert (garch_residuals.index == tda_features.index).all(), \
-        "Index mismatch between residuals and TDA features"
-
-    print(f"Residuals shape: {garch_residuals.shape}")
-    print(f"Features shape:  {tda_features.shape}")
+    garch_residuals, tda_features, paths = load_aligned_data(config)
     print(f"Feature columns: {list(tda_features.columns)}")
 
     model, a_seq, b_seq, R_seq, ll_history = fit_dcc_topo(
@@ -336,12 +270,15 @@ if __name__ == "__main__":
     )
 
     print(f"\nFinal ll: {ll_history[-1]:.2f}")
-    print(f"Improvement over baseline (-8247.96): {ll_history[-1] - (-8247.96):.2f}")
 
-    # R² diagnostics
-    X_raw = tda_features.values
-    X_t_np = (X_raw - X_raw.mean(axis=0)) / (X_raw.std(axis=0) + 1e-8)
-    print("\nR² diagnostics:")
+    try:
+        baseline_ll = np.load(paths['dcc_baseline'], allow_pickle=True).item()['ll_final']
+        print(f"Improvement over baseline ({baseline_ll:.2f}): {ll_history[-1] - baseline_ll:.2f}")
+    except (FileNotFoundError, KeyError):
+        print("  (no dcc_baseline_results.npy found -- run dcc_baseline.py for a comparison)")
+
+    X_t_np, _, _ = standardize_features(tda_features)
+    print("\nR2 diagnostics:")
     r2_a, r2_b = compute_r2(a_seq, b_seq, X_t_np)
 
     out_path = paths.get('dcc_topo_lpnorm', 'data/processed/dcc_topo_lpnorm_results.npy')

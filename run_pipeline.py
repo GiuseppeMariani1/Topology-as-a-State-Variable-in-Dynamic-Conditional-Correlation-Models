@@ -2,7 +2,7 @@
 run_pipeline.py
 
 Interactive runner for the MSCTHESIS pipeline. Lets you pick a single stage,
-a range, a comma-separated list, or the whole thing — rather than having to
+a range, a comma-separated list, or the whole thing -- rather than having to
 remember run order and exact script paths every time.
 
 Usage:
@@ -20,25 +20,21 @@ import subprocess
 import sys
 import os
 
-# ---------------------------------------------------------------------
-# Pipeline stages, in dependency order.
-# Edit `path` here if a script gets renamed/moved.
-# ---------------------------------------------------------------------
 STAGES = [
     {
         "id": 1,
-        "name": "TDA features — landscape (raw)",
+        "name": "TDA features - landscape (raw)",
         "path": "src/topology/tda_pipeline.py",
     },
     {
         "id": 2,
-        "name": "TDA features — L^p-norm summary (depends on 1)",
+        "name": "TDA features - L^p-norm summary (depends on 1)",
         "path": "src/topology/lp_norm_features.py",
     },
     {
         "id": 3,
         "name": "GARCH residuals per asset",
-        "path": "src/volatility/Garch.py",
+        "path": "src/volatility/garch.py",
     },
     {
         "id": 4,
@@ -47,26 +43,37 @@ STAGES = [
     },
     {
         "id": 5,
-        "name": "DCC topology model — lpnorm (depends on 2, 3)",
+        "name": "DCC topology model - lpnorm (depends on 2, 3)",
         "path": "src/models/dcc_topo.py",
     },
     {
         "id": 6,
-        "name": "Permutation test — lpnorm (depends on 5)",
-        "path": "src/models/permutation_test_lpnorm.py",
+        "name": "Permutation test - unregularized (depends on 5)",
+        "path": "src/models/permutation_test.py",
     },
     {
         "id": 7,
+        "name": "DCC topology model - regularized, lambda grid search (depends on 2, 3)",
+        "path": "src/models/dcc_topo_reg.py",
+    },
+    {
+        "id": 8,
+        "name": "Permutation test - regularized (depends on 7)",
+        "path": "src/models/permutation_test.py",
+        "args": ["--reg"],
+    },
+    {
+        "id": 9,
         "name": "Stats tests (LR test, R^2, etc.)",
         "path": "src/evaluation/stats_tests.py",
     },
     {
-        "id": 8,
+        "id": 10,
         "name": "Diagnostic: L^p-norm vs known crashes",
         "path": "scripts/diagnostic_lpnorm_vs_crashes.py",
     },
     {
-        "id": 9,
+        "id": 11,
         "name": "Check: lpnorm model vs realized correlation",
         "path": "scripts/check_lpnorm_vs_realized_corr.py",
     },
@@ -75,7 +82,7 @@ STAGES = [
 
 def print_menu():
     print()
-    print("MSCTHESIS pipeline — available stages")
+    print("MSCTHESIS pipeline - available stages")
     print()
     for stage in STAGES:
         exists = os.path.exists(stage["path"])
@@ -115,20 +122,20 @@ def parse_selection(raw, max_id):
 def run_stage(stage):
     path = stage["path"]
     if not os.path.exists(path):
-        print(f"  SKIPPED — file not found: {path}")
+        print(f"  SKIPPED - file not found: {path}")
         return False
 
     print(f"\n{'=' * 60}")
     print(f"Running stage {stage['id']}: {stage['name']}")
-    print(f"  -> {path}")
+    print(f"  -> {path} {' '.join(stage.get('args', []))}".rstrip())
     print(f"{'=' * 60}\n")
 
-    result = subprocess.run([sys.executable, path])
+    result = subprocess.run([sys.executable, path] + stage.get("args", []))
     if result.returncode != 0:
-        print(f"\n  FAILED — stage {stage['id']} exited with code {result.returncode}")
+        print(f"\n  FAILED - stage {stage['id']} exited with code {result.returncode}")
         return False
 
-    print(f"\n  OK — stage {stage['id']} completed")
+    print(f"\n  OK - stage {stage['id']} completed")
     return True
 
 
@@ -145,7 +152,7 @@ def main():
             return
 
         if not selected_ids:
-            print("  No valid stages selected — try again.\n")
+            print("  No valid stages selected - try again.\n")
             continue
 
         stages_to_run = [s for s in STAGES if s["id"] in selected_ids]
