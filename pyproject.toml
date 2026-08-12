@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mscthesis"
+version = "0.1.0"
+description = "TopoDCC: persistence-landscape-driven Dynamic Conditional Correlation"
+requires-python = ">=3.10"
+
+# Dependencies are kept in requirements.txt rather than duplicated here,
+# since torch in particular needs an index-url flag for CUDA builds that
+# pyproject can't express. Install with:
+#   pip install -r requirements.txt
+#   pip install -e .
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["src*"]
