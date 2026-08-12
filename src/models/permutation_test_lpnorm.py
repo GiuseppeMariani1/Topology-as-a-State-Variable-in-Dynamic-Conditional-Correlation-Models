@@ -190,7 +190,23 @@ if __name__ == "__main__":
         # (same features, same n_iter=500/lr=0.01, same code) instead of
         # refitting from scratch. Drop this argument (real_ll=None) if
         # anything about the features, n_iter, or lr changes before rerunning.
-        real_ll=-7827.58,
+        dcc_topo_path = paths.get('dcc_topo_lpnorm', 'data/processed/dcc_topo_lpnorm_results.npy')
+try:
+    cached = np.load(dcc_topo_path, allow_pickle=True).item()
+    cached_real_ll = cached['ll_final']
+    print(f"Loaded cached real_ll = {cached_real_ll:.2f} from {dcc_topo_path}")
+except (FileNotFoundError, KeyError):
+    cached_real_ll = None
+    print(f"No cached results at {dcc_topo_path} -- will refit real features from scratch.")
+
+real_ll, permuted_lls, results_df = run_permutation_test(
+    garch_residuals,
+    tda_features,
+    n_permutations=topo_cfg.get('n_permutations', 10),
+    n_iter=topo_cfg['n_iter'],
+    lr=topo_cfg['lr'],
+    real_ll=cached_real_ll,
+)
     )
 
     out_path = paths.get('permutation_test_lpnorm', 'data/processed/permutation_test_lpnorm_results.npy')

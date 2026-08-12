@@ -12,7 +12,7 @@ def compute_Q_bar(z_t):
 def dcc_topo_recursion(z_t, a_seq, b_seq, Q_bar):
     T, N = z_t.shape
     Q_t = Q_bar.clone()
-    Q_seq = torch.zeros(T, N, N, dtype=z_t.dtype)
+    Q_seq = torch.zeros(T, N, N, dtype=z_t.dtype, device=z_t.device)
     Q_seq[0] = Q_t
 
     for t in range(1, T):
@@ -29,6 +29,66 @@ def dcc_topo_recursion(z_t, a_seq, b_seq, Q_bar):
     R_inv = torch.linalg.inv(R_seq)
     mahal = torch.sum(z_t * (R_inv @ z_t.unsqueeze(-1)).squeeze(-1), dim=1)
     ll = -0.5 * (log_det.sum() + mahal.sum())
+
+    return R_seq, ll
+
+
+def dcc_topo_recursion_batched(z_t, a_seq, b_seq, Q_bar):
+    """
+    Batched DCC recursion: fits B independent models against the SAME
+    returns series z_t / Q_bar simultaneously, differing only in a_seq/
+    b_seq (i.e. only in the topology features or regularisation strength
+    driving them). This is the GPU-friendly shape for permutation tests
+    (B = shuffled feature sets) and lambda grid search (B = lambda values).
+
+    The recursion over t is inherently sequential (Q_t depends on Q_{t-1})
+    and can't be parallelised away -- what batching buys you is doing all
+    B model's work *within* each timestep as one vectorised GPU op instead
+    of B separate Python-level model runs (whether looped or spread across
+    CPU processes).
+
+    Args:
+        z_t   : (T, N)     -- shared across the batch
+        a_seq : (B, T)
+        b_seq : (B, T)
+        Q_bar : (N, N)     -- shared across the batch
+
+    Returns:
+        R_seq : (B, T, N, N)
+        ll    : (B,)  -- one log-likelihood per batch element
+    """
+    B, T = a_seq.shape
+    N = z_t.shape[1]
+    device = z_t.device
+    dtype = z_t.dtype
+
+    Q_t = Q_bar.unsqueeze(0).expand(B, N, N).clone()
+    Q_seq = torch.zeros(B, T, N, N, dtype=dtype, device=device)
+    Q_seq[:, 0] = Q_t
+
+    # z_t is shared across the batch, so its outer products only need
+    # computing once (not once per batch element).
+    z_outer_seq = torch.einsum('ti,tj->tij', z_t, z_t)  # (T, N, N)
+    Q_bar_b = Q_bar.unsqueeze(0)  # (1, N, N), broadcasts over batch
+
+    for t in range(1, T):
+        a_t = a_seq[:, t].view(B, 1, 1)
+        b_t = b_seq[:, t].view(B, 1, 1)
+        Q_t = (1 - a_t - b_t) * Q_bar_b + a_t * z_outer_seq[t-1].unsqueeze(0) + b_t * Q_t
+        Q_seq[:, t] = Q_t
+
+    diag_Q = torch.sqrt(torch.diagonal(Q_seq, dim1=2, dim2=3))  # (B, T, N)
+    R_seq = Q_seq / torch.einsum('bti,btj->btij', diag_Q, diag_Q)
+
+    sign, log_det = torch.linalg.slogdet(R_seq)  # (B, T)
+    R_inv = torch.linalg.inv(R_seq)               # (B, T, N, N)
+
+    z_t_exp = z_t.unsqueeze(0).expand(B, T, N)     # shared returns, broadcast over batch
+    mahal = torch.sum(
+        z_t_exp * torch.einsum('btij,btj->bti', R_inv, z_t_exp), dim=2
+    )  # (B, T)
+
+    ll = -0.5 * (log_det.sum(dim=1) + mahal.sum(dim=1))  # (B,)
 
     return R_seq, ll
 
@@ -50,6 +110,47 @@ class TopoDCC(nn.Module):
         b_raw = torch.sigmoid(X_t @ self.w_b + self.bias_b)
 
         # Soft constraint: rescale only when a+b would exceed 0.9998
+        total = a_raw + b_raw + 1e-6
+        exceed = (total > 0.9998).float()
+        a_t = a_raw * (1 - exceed) + a_raw * (0.9998 / total) * exceed
+        b_t = b_raw * (1 - exceed) + b_raw * (0.9998 / total) * exceed
+
+        return a_t, b_t
+
+
+class TopoDCCBatched(nn.Module):
+    """
+    B independent TopoDCC models trained simultaneously as one batched
+    tensor op. Same math as TopoDCC.forward, just with an extra leading
+    batch dimension on every parameter and an einsum instead of @.
+
+    Use this + dcc_topo_recursion_batched together for the GPU path in
+    permutation testing (B = shuffled feature sets) and lambda grid
+    search (B = lambda values) — see those modules for usage.
+    """
+    def __init__(self, n_features, batch_size):
+        super().__init__()
+        self.batch_size = batch_size
+        self.w_a = nn.Parameter(torch.randn(batch_size, n_features) * 0.01)
+        self.w_b = nn.Parameter(torch.randn(batch_size, n_features) * 0.01)
+        self.bias_a = nn.Parameter(torch.full((batch_size,), -3.5))
+        self.bias_b = nn.Parameter(torch.full((batch_size,), 2.9))
+
+    def forward(self, X_t):
+        """
+        X_t: (B, T, n_features) -- each batch element can have its own
+        feature matrix (e.g. a different shuffle), or the same one
+        repeated B times (e.g. lambda search over shared features).
+
+        Returns a_seq, b_seq: (B, T)
+        """
+        a_raw = torch.sigmoid(
+            torch.einsum('btf,bf->bt', X_t, self.w_a) + self.bias_a.unsqueeze(1)
+        )
+        b_raw = torch.sigmoid(
+            torch.einsum('btf,bf->bt', X_t, self.w_b) + self.bias_b.unsqueeze(1)
+        )
+
         total = a_raw + b_raw + 1e-6
         exceed = (total > 0.9998).float()
         a_t = a_raw * (1 - exceed) + a_raw * (0.9998 / total) * exceed
@@ -102,6 +203,75 @@ def fit_dcc_topo(garch_residuals_df, tda_features_df,
         R_seq, _ = dcc_topo_recursion(z_t, a_seq, b_seq, Q_bar)
 
     return model, a_seq, b_seq, R_seq, ll_history
+
+def fit_dcc_topo_batched(z_t, X_t_batch, n_iter=500, lr=0.01,
+                          lambda_l2=None, device=None, verbose=False,
+                          log_every=100):
+    """
+    Fit B independent TopoDCC models simultaneously as one batched GPU
+    (or CPU) computation, instead of B separate process-pool workers.
+
+    Args:
+        z_t         : (T, N) torch tensor, GARCH residuals -- shared
+                      across the whole batch (the actual return series
+                      doesn't change; only the driving features do).
+        X_t_batch   : (B, T, n_features) torch tensor -- already
+                      normalised. Each batch slice can be a different
+                      feature-row shuffle (permutation test) or the
+                      same features repeated B times (lambda search).
+        lambda_l2   : optional (B,) tensor/array of per-batch-element
+                      L2 penalty strengths, e.g. for a lambda grid
+                      search. None (default) means unregularised, i.e.
+                      equivalent to B independent dcc_topo fits.
+        device      : torch.device; defaults to CUDA if available.
+
+    Returns:
+        model      : the fitted TopoDCCBatched (B models' worth of params)
+        ll_final   : (B,) numpy array, final log-likelihood per batch item
+        ll_history : list of (B,) numpy arrays, one per iteration
+    """
+    device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    z_t = z_t.to(device)
+    X_t_batch = X_t_batch.to(device)
+
+    B, T, n_features = X_t_batch.shape
+    Q_bar = compute_Q_bar(z_t).to(device)
+
+    if lambda_l2 is not None:
+        lambda_l2 = torch.as_tensor(lambda_l2, dtype=z_t.dtype, device=device)
+        assert lambda_l2.shape == (B,), \
+            f"lambda_l2 must have shape ({B},), got {tuple(lambda_l2.shape)}"
+
+    model = TopoDCCBatched(n_features, B).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    ll_history = []
+
+    for i in range(n_iter):
+        optimizer.zero_grad()
+        a_seq, b_seq = model(X_t_batch)
+        _, ll = dcc_topo_recursion_batched(z_t, a_seq, b_seq, Q_bar)  # (B,)
+
+        if lambda_l2 is not None:
+            l2_pen = model.w_a.pow(2).sum(dim=1) + model.w_b.pow(2).sum(dim=1)  # (B,)
+            loss = (-ll + lambda_l2 * l2_pen).sum()
+        else:
+            loss = (-ll).sum()
+
+        loss.backward()
+        optimizer.step()
+        ll_history.append(ll.detach().cpu().numpy())
+
+        if verbose and (i % log_every == 0 or i == n_iter - 1):
+            ll_np = ll.detach().cpu().numpy()
+            print(f"  iter {i:4d} | ll: mean={ll_np.mean():.2f} "
+                  f"min={ll_np.min():.2f} max={ll_np.max():.2f}")
+
+    with torch.no_grad():
+        a_seq, b_seq = model(X_t_batch)
+        _, ll_final = dcc_topo_recursion_batched(z_t, a_seq, b_seq, Q_bar)
+
+    return model, ll_final.detach().cpu().numpy(), ll_history
+
 
 def compute_r2(a_seq, b_seq, X_t_np):
     """
