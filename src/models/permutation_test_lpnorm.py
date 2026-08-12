@@ -82,7 +82,7 @@ def run_permutation_test(garch_residuals_df, tda_features_df,
     """
     Returns: real_ll (float), permuted_lls (np.ndarray), results_df (pd.DataFrame)
 
-    real_ll: if you already have a final ll from a previous identical run
+    real_ll: if you already have a final log likelyhood from a previous identical run
       (same features, same n_iter/lr, same dcc_topo.py code), pass it here
       to skip refitting on real features. Note this was one particular
       random init's result, not "the" answer for real features -- a fresh

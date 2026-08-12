@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 
 """
-TDA Pipeline — Persistence Landscape Version
+Topological Data Analysis Pipeline: Persistence Landscapes output.
 
-Replaces persistence images with persistence landscapes, which are:
-  - Evaluated on a fixed global filtration grid (comparable across time)
-  - Mathematically stable (Lipschitz in bottleneck/Wasserstein metrics)
-  - Free of per-window normalisation artefacts
+Persistent landsscapes are evaluated as:
+  - Evaluated on a fixed global filtration grid (comparable across time);
+  - Mathematically stable (Lipschitz in bottleneck/Wasserstein metrics);
+  - Free of per-window normalisation artefacts. 
 
 Two-phase pipeline:
-  Phase 1 (parallel): compute persistence diagrams + scalar features
-  Phase 2 (sequential): build global filtration grid, compute landscapes
+  Phase 1 (parallel): compute persistence diagrams + 9 scalar features.
+  Phase 2 (sequential): build global filtration grid, compute landscapes.
 
 Feature groups produced:
   - lh0_k{k}_g{g}     : H0 landscape functions (k=0..N_LANDSCAPES-1)
@@ -32,7 +32,7 @@ from joblib import Parallel, delayed
 import warnings
 warnings.filterwarnings('ignore')
 
-#  CONFIGURATION (Will be overridden by function arguments, this is a fallback)
+#  CONFIGURATION (Will be overridden by function arguments, fallback in case config.yaml has issue.)
 
 WINDOW         = 250  # 1-year rolling window (trading days)
 STEP           = 1      # daily rolling
@@ -60,13 +60,13 @@ def embed_multivariate(returns_window, embed_dim):
             )
     return X
 
-
+#normalizing point cloud to perform statistical analysis:
 def normalize_pointcloud(X):
     X = X - X.mean(axis=0)
     X = X / (X.std(axis=0) + 1e-10)
     return X
 
-
+#PCA reduction ----> might be deleted, as next steps could involve standardizing on a lattice, assuming we have the rank of our tensors.
 def reduce_to_pca(X, n_components):
     k = min(n_components, X.shape[0], X.shape[1])
     if k < 2:
@@ -109,7 +109,7 @@ def compute_persistence_landscape(dgm, grid, n_landscapes=N_LANDSCAPES):
 
     λ_k(s) = k-th largest tent value at filtration value s.
 
-    Returns: (n_landscapes, len(grid)) array — zero-padded if diagram is small.
+    Returns: (n_landscapes, len(grid)) array --> zero-padded if diagram is small.
     """
     finite = np.isfinite(dgm[:, 1])
     bars   = dgm[finite]
@@ -156,7 +156,7 @@ def compute_window(s, e, returns_data, dates,
                    min_persist=MIN_PERSIST):
     """
     Phase 1: compute persistence diagrams and scalar features for window [s, e).
-    Landscapes are NOT computed here — they require the global grid built in Phase 2.
+    Landscapes are NOT yet computed here they require the global grid built in Phase 2.
 
     Returns: (scalar_features, dgm_h0, dgm_h1, end_date)
     """
@@ -209,15 +209,14 @@ def run_tda_pipeline(log_returns_df,
                      n_jobs=-1,
                      verbose=True):
     """
-    Main TDA pipeline — persistence landscape version.
+    Main TDA pipeline: persistence landscapes:
 
     Args:
         log_returns_df : DataFrame (n_days x n_assets), date-indexed
         window         : rolling window size in trading days
         step           : step between windows
-        n_jobs         : parallel workers (-1 = all cores)
+        n_jobs         : parallel workers (-1 = all available CPU cores, therefore the TDA pipeline scales on more cores.)
         verbose        : print progress
-
     Returns:
         tda_df         : DataFrame of topological features, date-indexed
         grid           : the global filtration grid (save for out-of-sample use)
@@ -238,7 +237,7 @@ def run_tda_pipeline(log_returns_df,
         print(f"  Landscapes:     {n_landscapes} functions x {grid_points} grid points")
         print(f"  Data shape:     {returns_data.shape}")
         print(f"  Total windows:  {len(slices)}\n")
-        print("Phase 1: computing persistence diagrams (parallel)...")
+        print("Phase 1: computing persistence diagrams (parallel computing on all CPU cores)...")
 
     #  Phase 1: parallel diagram computation 
     raw_results = Parallel(n_jobs=n_jobs, verbose=5)(
@@ -287,7 +286,7 @@ def run_tda_pipeline(log_returns_df,
     if verbose:
         print(f"  Grid: 0 -> {grid[-1]:.4f}  ({grid_points} points, "
               f"{grid_quantile:.0%} quantile of max-death values)")
-        print(f"\nPhase 2: computing landscapes on fixed grid...")
+        print(f"\nPhase 2: Computing landscapes on fixed grid...")
 
     feature_list = []
     for i, (sf, dh0, dh1) in enumerate(zip(scalar_list, dgms_h0, dgms_h1)):

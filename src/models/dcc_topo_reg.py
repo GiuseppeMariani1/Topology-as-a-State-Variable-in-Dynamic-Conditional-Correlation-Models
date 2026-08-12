@@ -123,13 +123,12 @@ def fit_dcc_topo_reg(z_train, X_train, Q_bar,
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    # Single forward pass under final weights — reused by callers instead
+    # Single forward pass under final weights reused by callers instead
     # of being recomputed.
     with torch.no_grad():
         a_seq_final, b_seq_final = model(X_train)
 
     return model, ll_history, a_seq_final, b_seq_final
-
 
 def eval_oos_ll(model, z_t, X_t, Q_bar, train_size, device=None):
     """
@@ -204,7 +203,6 @@ def _lambda_worker(lam, z_train_np, X_train_np, Qbar_np, z_t_np, X_t_np,
         'b_std':       round(b_std, 4),
         'n_iters_run': len(ll_hist),
     }
-
 
 def lambda_search(z_t, X_t, Q_bar, train_size,
                   lambda_grid=LAMBDA_GRID,
@@ -282,7 +280,6 @@ def lambda_search(z_t, X_t, Q_bar, train_size,
 
     results_df = pd.DataFrame(rows).sort_values('ll_test', ascending=False)
     return results_df
-
 
 # MAIN
 

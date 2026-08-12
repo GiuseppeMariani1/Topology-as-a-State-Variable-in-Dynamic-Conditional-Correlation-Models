@@ -59,7 +59,7 @@ class TopoDCC(nn.Module):
 
 
 def fit_dcc_topo(garch_residuals_df, tda_features_df,
-                 n_iter=500, lr=0.01, verbose=True):
+                 n_iter=500, lr=0.01, verbose=True,):
 
     z_t = torch.tensor(garch_residuals_df.values, dtype=torch.float32)
 
@@ -103,7 +103,6 @@ def fit_dcc_topo(garch_residuals_df, tda_features_df,
 
     return model, a_seq, b_seq, R_seq, ll_history
 
-
 def compute_r2(a_seq, b_seq, X_t_np):
     """
     R² of topology features explaining variation in a_t and b_t.
@@ -125,7 +124,6 @@ def compute_r2(a_seq, b_seq, X_t_np):
 
     return r2_a, r2_b
 
-
 if __name__ == "__main__":
     import os
     import sys
@@ -138,7 +136,6 @@ if __name__ == "__main__":
 
     
     garch_residuals = pd.read_parquet(paths['garch_residuals'])
-
 
     # L^p-norm reduced features (literature-matched, H1-only)
     # the raw 186-column landscape file used in the run that failed the
