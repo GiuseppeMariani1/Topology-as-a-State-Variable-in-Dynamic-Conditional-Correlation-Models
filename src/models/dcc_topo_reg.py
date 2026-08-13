@@ -258,7 +258,13 @@ def _lambda_search_gpu(z_t, X_train, X_t, Q_bar, train_size, lambda_grid,
         lambda_l2=lambda_tensor, device=device, verbose=False
     )
 
-    X_t_batch = X_t.unsqueeze(0).expand(B, *X_t.shape).contiguous()
+    # fit_dcc_topo_batched moves its OWN local copies of these tensors to
+    # `device` internally -- that doesn't affect these caller-side
+    # variables, so they're still wherever they started (CPU). Move them
+    # explicitly before reusing them against the now-GPU-resident model.
+    X_train_batch = X_train_batch.to(device)
+    X_t_batch = X_t.unsqueeze(0).expand(B, *X_t.shape).contiguous().to(device)
+
     ll_test = eval_oos_ll_batched(model, z_t, X_t_batch, Q_bar, train_size, device=device)
 
     with torch.no_grad():
