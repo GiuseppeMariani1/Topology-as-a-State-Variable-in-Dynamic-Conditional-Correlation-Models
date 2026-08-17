@@ -15,23 +15,21 @@ Workflow:
   4. For each lambda: fit on train, evaluate log-likelihood on test.
   5. Save best model and results.
 
-Performance notes (see PR discussion):
-  - Early stopping with patience cuts iterations once train loss plateaus,
-    instead of always running the full n_iter steps.
-  - GPU is used automatically if available (torch.cuda.is_available()).
-  - The 7 lambda fits in lambda_search are independent of each other, so
-    they're run in parallel worker processes when on CPU. (On a single GPU
-    we keep it sequential — multiple processes contending for one GPU
-    context tends to be slower and flakier than just running in series.)
-  - lambda_search no longer recomputes a_seq/b_seq after training; it
-    reuses the pass already done at the end of fit_dcc_topo_reg.
+Performance notes:
+  - Early stopping (patience) cuts iterations once train loss plateaus.
+  - GPU used automatically if available. On CUDA, all lambda fits in the
+    grid train as one batched op; on CPU they run in parallel worker
+    processes instead, each with its own early stopping.
+  - The final full-data fit is forced to CPU regardless of `device`: it's
+    a single sequential model with no batch width for the GPU to exploit,
+    and it warm-starts from the winning lambda's already-converged
+    weights (GPU path only) rather than training from scratch.
 
 Usage:
   python src/models/dcc_topo_reg.py
 """
 
 import os
-import sys
 import concurrent.futures
 import multiprocessing as mp
 
@@ -53,6 +51,7 @@ def fit_dcc_topo_reg(z_train, X_train, Q_bar,
                      patience=30,
                      min_delta=1e-4,
                      device=None,
+                     init_state=None,
                      verbose=False):
     """
     Fit TopoDCC with elastic-net regularisation on training data.
@@ -67,6 +66,9 @@ def fit_dcc_topo_reg(z_train, X_train, Q_bar,
     best iteration are restored at the end (not necessarily the last ones
     run), so a stall right after a good step doesn't lose progress.
 
+    init_state: optional state_dict to warm-start from (e.g. the converged
+      weights for this lambda from a prior search), instead of random init.
+
     Returns: fitted model, ll_history (train), a_seq, b_seq
       a_seq/b_seq are the model's outputs on X_train under the *final
       restored* weights, computed once — callers should reuse these rather
@@ -79,6 +81,8 @@ def fit_dcc_topo_reg(z_train, X_train, Q_bar,
 
     n_features = X_train.shape[1]
     model      = TopoDCC(n_features).to(device)
+    if init_state is not None:
+        model.load_state_dict({k: v.to(device) for k, v in init_state.items()})
     optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
     ll_history = []
 
@@ -287,7 +291,11 @@ def _lambda_search_gpu(z_t, X_train, X_t, Q_bar, train_size, lambda_grid,
         print(f"    lambda_l2={lam:.0e}  ll_train={rows[-1]['ll_train']:.2f}  "
               f"ll_test={rows[-1]['ll_test']:.2f}  |w|={rows[-1]['|w|_2']:.4f}")
 
-    return rows
+    best_i = int(np.argmax(ll_test))
+    best_state = {'w_a': model.w_a[best_i], 'w_b': model.w_b[best_i],
+                  'bias_a': model.bias_a[best_i], 'bias_b': model.bias_b[best_i]}
+    best_state = {k: v.detach().cpu() for k, v in best_state.items()}
+    return rows, best_state
 
 
 def lambda_search(z_t, X_t, Q_bar, train_size,
@@ -297,25 +305,24 @@ def lambda_search(z_t, X_t, Q_bar, train_size,
                   n_jobs=None, device=None):
     """
     Fit one model per lambda value, report train and test log-likelihoods.
-    Returns a DataFrame of results sorted by test ll descending.
+    Returns (results_df, warm_state) -- results sorted by test ll descending,
+    plus the winning lambda's converged weights for warm-starting the final
+    fit (None on CPU, since worker processes don't return live weights).
 
-    - On CUDA: all lambda fits run as one batched op (see _lambda_search_gpu).
-      Early stopping/patience isn't applied per-item in the batched path
-      (all items train for the full n_iter) -- batching trades that off
-      for the much larger throughput win of one GPU op instead of B.
-    - On CPU: lambda fits are independent, so they're run in parallel
-      worker processes (n_jobs of them, default = min(len(grid), cpu_count)),
-      each with its own early stopping via patience/min_delta.
+    On CUDA all lambda fits run as one batched op (_lambda_search_gpu), no
+    per-item early stopping. On CPU, fits run in parallel worker processes
+    (n_jobs, default = min(len(grid), cpu_count)), each with its own
+    early stopping via patience/min_delta.
     """
     device = device or torch.device('cpu')
     z_train = z_t[:train_size]
     X_train = X_t[:train_size]
 
     if device.type == 'cuda':
-        rows = _lambda_search_gpu(z_t, X_train, X_t, Q_bar, train_size,
-                                   lambda_grid, n_iter, lr, device)
+        rows, warm_state = _lambda_search_gpu(z_t, X_train, X_t, Q_bar, train_size,
+                                               lambda_grid, n_iter, lr, device)
         results_df = pd.DataFrame(rows).sort_values('ll_test', ascending=False)
-        return results_df
+        return results_df, warm_state
 
     if n_jobs is None:
         n_jobs = max(1, min(len(lambda_grid), os.cpu_count() or 1))
@@ -373,7 +380,7 @@ def lambda_search(z_t, X_t, Q_bar, train_size,
                   f"(stopped at iter {len(ll_hist)})")
 
     results_df = pd.DataFrame(rows).sort_values('ll_test', ascending=False)
-    return results_df
+    return results_df, None
 
 # MAIN
 
@@ -406,7 +413,7 @@ if __name__ == "__main__":
     # Lambda grid search
     print("LAMBDA GRID SEARCH (Ridge regularisation)")
 
-    results = lambda_search(
+    results, warm_state = lambda_search(
         z_t,
         X_t,
         Q_bar,
@@ -427,7 +434,13 @@ if __name__ == "__main__":
     # Fit best model
     best_lambda = results.iloc[0]['lambda_l2']
     print(f"\nBest lambda_l2 = {best_lambda:.0e}")
-    print("Fitting final model on full data...")
+    print("Fitting final model on full data..." +
+          (" (warm-started from search)" if warm_state is not None else ""))
+
+    # Sequential, non-batched loop of tiny 5x5 ops -- no batch width for
+    # the GPU to exploit, so this step is forced CPU (matches dcc_topo.py
+    # stage 5) instead of inheriting the script's cuda `device`.
+    final_fit_device = torch.device('cpu')
 
     model, ll_hist, a_seq, b_seq = fit_dcc_topo_reg(
         z_t,
@@ -438,18 +451,19 @@ if __name__ == "__main__":
         lr=topo_reg_cfg['lr'],
         patience=patience,
         min_delta=min_delta,
-        device=device,
+        device=final_fit_device,
+        init_state=warm_state,
         verbose=True
     )
 
     with torch.no_grad():
-        R_seq, _ = dcc_topo_recursion(z_t.to(device), a_seq, b_seq, compute_Q_bar(z_t).to(device))
+        R_seq, _ = dcc_topo_recursion(
+            z_t.to(final_fit_device), a_seq, b_seq,
+            compute_Q_bar(z_t).to(final_fit_device)
+        )
 
     ll_final = ll_hist[-1]
 
-    # CHANGED: baseline comparison now loaded from the actual current
-    # dcc_baseline_results.npy instead of a hardcoded stale value
-    # (-4786.44, left over from the old 5060-row/186-feature run).
     try:
         baseline_results = np.load(paths['dcc_baseline'], allow_pickle=True).item()
         baseline_ll = baseline_results['ll_final']

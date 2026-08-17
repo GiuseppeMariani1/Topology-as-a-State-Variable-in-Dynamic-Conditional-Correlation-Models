@@ -9,6 +9,7 @@ def compute_Q_bar(z_t):
     return (z_t.T @ z_t) / T
 
 
+@torch.jit.script
 def dcc_topo_recursion(z_t, a_seq, b_seq, Q_bar):
     T, N = z_t.shape
     Q_t = Q_bar.clone()
@@ -33,6 +34,7 @@ def dcc_topo_recursion(z_t, a_seq, b_seq, Q_bar):
     return R_seq, ll
 
 
+@torch.jit.script
 def dcc_topo_recursion_batched(z_t, a_seq, b_seq, Q_bar):
     """
     Batched DCC recursion: fits B independent models against the SAME
