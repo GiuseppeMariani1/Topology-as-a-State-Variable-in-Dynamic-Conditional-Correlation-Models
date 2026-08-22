@@ -12,3 +12,5 @@ torch-geometric
 statsmodels
 joblib
 pyyaml
+arch
+pyarrow
