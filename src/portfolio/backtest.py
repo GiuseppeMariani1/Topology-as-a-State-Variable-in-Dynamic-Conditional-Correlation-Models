@@ -127,24 +127,42 @@ def run_backtest(log_returns_df, sigma_df, R_seq_baseline, R_seq_topo,
 if __name__ == "__main__":
     import os
     import sys
+    import argparse
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
     from src.data.loader import load_config
+
+    parser = argparse.ArgumentParser(description="Portfolio backtest: baseline DCC vs TopoDCC vs equal-weight")
+    parser.add_argument('--variant', choices=['reg', 'unreg', 'both'], default='reg',
+                         help="Which TopoDCC result file to compare against baseline: "
+                              "'reg' = dcc_topo_reg (lambda=4000, regularized), "
+                              "'unreg' = dcc_topo_lpnorm (unregularized), "
+                              "'both' = run and print both comparisons.")
+    args = parser.parse_args()
 
     config = load_config()
     paths = config['paths']
 
     log_returns = pd.read_parquet(paths['log_returns'])
     sigma_df = pd.read_parquet(paths.get('garch_sigma', 'data/processed/garch_sigma.parquet'))
-
     baseline_results = np.load(paths['dcc_baseline'], allow_pickle=True).item()
-    topo_reg_results = np.load(paths['dcc_topo_reg'], allow_pickle=True).item()
 
-    result = run_backtest(
-        log_returns_df=log_returns,
-        sigma_df=sigma_df,
-        R_seq_baseline=baseline_results['R_seq'],
-        R_seq_topo=topo_reg_results['R_seq'],
-    )
+    variant_map = {
+        'reg': ('dcc_topo_reg', 'TopoDCC (regularized, lambda=4000)'),
+        'unreg': ('dcc_topo_lpnorm', 'TopoDCC (unregularized)'),
+    }
 
-    print("\n=== Portfolio backtest: Baseline DCC vs TopoDCC (regularized) vs Equal-weight ===\n")
-    print(result['summary'].round(4).to_string())
+    variants_to_run = ['reg', 'unreg'] if args.variant == 'both' else [args.variant]
+
+    for v in variants_to_run:
+        path_key, label = variant_map[v]
+        topo_results = np.load(paths[path_key], allow_pickle=True).item()
+
+        result = run_backtest(
+            log_returns_df=log_returns,
+            sigma_df=sigma_df,
+            R_seq_baseline=baseline_results['R_seq'],
+            R_seq_topo=topo_results['R_seq'],
+        )
+
+        print(f"\n=== Portfolio backtest: Baseline DCC vs {label} vs Equal-weight ===\n")
+        print(result['summary'].round(4).to_string())
