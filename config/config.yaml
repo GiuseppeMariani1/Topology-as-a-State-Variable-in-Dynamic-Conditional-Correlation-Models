@@ -43,10 +43,13 @@ paths:
   prices: data/processed/prices.parquet
   log_returns: data/processed/log_returns.parquet
   garch_residuals: data/processed/garch_residuals.parquet
+  garch_sigma: data/processed/garch_sigma.parquet
   tda_features_landscape: data/processed/tda_features_landscape.parquet
   tda_features_lpnorm: data/processed/tda_features_lpnorm.parquet 
   tda_features_pi: data/processed/tda_features_pi.parquet
   dcc_baseline: data/processed/dcc_baseline_results.npy
+  dcc_adcc: data/processed/dcc_adcc_results.npy
+  oos_evaluation: data/processed/oos_evaluation_results.npy
   dcc_topo: data/processed/dcc_topo_results_pi.npy
   dcc_topo_lpnorm: data/processed/dcc_topo_lpnorm_results.npy
   dcc_topo_reg: data/processed/dcc_topo_reg_results.npy

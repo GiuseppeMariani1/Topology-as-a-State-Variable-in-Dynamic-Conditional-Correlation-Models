@@ -44,8 +44,13 @@ REGULARIZED MODE (regularized=True)
   dcc_topo_reg results rather than hardcoded (so it can't drift out of
   sync if the grid search is rerun). This is arguably the more honest
   comparison, since the regularized model is the one you'd actually
-  report. Defaults to 100 permutations rather than 10, since p can only
-  be resolved to 1/n_permutations.
+  report.
+
+PERMUTATION COUNT
+  Both modes now default to 500. p can only be resolved to
+  1/n_permutations, so the old defaults (10 / 100) capped the reportable
+  p-value at 0.1 and 0.01 respectively regardless of how strong the
+  result actually was. 500 resolves p to 0.002.
 
 DEVICE HANDLING
   On CUDA, all permutations are fitted as ONE batched op (see
@@ -184,7 +189,14 @@ def run_permutation_test(garch_residuals_df, tda_features_df,
         raise ValueError("regularized=True requires lambda_l2 (read it from dcc_topo_reg results).")
 
     if n_permutations is None:
-        n_permutations = 100 if regularized else 10
+        # 500 for both modes. p can only be resolved to 1/n_permutations,
+        # so the previous defaults (10 unregularized / 100 regularized)
+        # could not distinguish "significant" from "not" at any useful
+        # resolution -- 10 permutations bounds p at 0.1 no matter what the
+        # result is. 500 gives p to 0.002, which is enough to report a
+        # significance claim in the thesis without the resolution itself
+        # being the binding constraint.
+        n_permutations = 500
 
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     label = f"REGULARIZED (lambda_l2={lambda_l2:.0e})" if regularized else "unregularized"
@@ -276,7 +288,7 @@ if __name__ == "__main__":
     parser.add_argument('--reg', action='store_true',
                         help='test the Ridge-regularized model at the best saved lambda')
     parser.add_argument('--n-permutations', type=int, default=None,
-                        help='override the default (10 unregularized / 100 regularized)')
+                        help='override the default (500 for both modes; p resolves to 1/n)')
     parser.add_argument('--fresh', action='store_true',
                         help='refit real features instead of reusing the cached ll')
     args = parser.parse_args()
