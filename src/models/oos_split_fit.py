@@ -92,13 +92,17 @@ def main():
     t_unreg = time.time() - t0
     print(f"[Unregularized TopoDCC] train fit took {t_unreg:.1f}s")
 
-    # --- Regularized TopoDCC (train-only fit, lambda=4000... but note: this codebase's
-    #     lambda scale for fit_dcc_topo_reg looks like it's O(1e-4 to 1) per LAMBDA_GRID,
-    #     NOT literally 4000 -- flag this discrepancy rather than silently guessing ---
+    # --- Regularized TopoDCC (train-only fit, lambda=4000) ---
+    # Confirmed against config/config.yaml's `models.topo_reg.lambda_grid`
+    # (which is what run_pipeline.py actually uses) that 4000 is a real,
+    # correctly-scaled value on this codebase's lambda axis -- the
+    # LAMBDA_GRID constant inside dcc_topo_reg.py (O(1e-4 to 1e-1)) is
+    # dead/legacy code, never wired into the real pipeline run, so it's
+    # not a competing scale to worry about.
     t0 = time.time()
     model_reg, ll_hist_reg, a_seq_train_reg, b_seq_train_reg = fit_dcc_topo_reg(
         z_train, X_train, Q_bar_train,
-        lambda_l2=1e-1, n_iter=500, lr=0.01, patience=30, min_delta=1e-4,
+        lambda_l2=4000, n_iter=500, lr=0.01, patience=30, min_delta=1e-4,
         device=torch.device('cpu'), verbose=False
     )
     t_reg = time.time() - t0
@@ -124,13 +128,6 @@ def main():
     np.save('data/processed/oos_R_seq_unreg_test.npy', R_seq_unreg_test)
     np.save('data/processed/oos_R_seq_reg_test.npy', R_seq_reg_test)
     print("Saved test-period R_seq arrays for use in backtest.py")
-    print(f"\nNOTE: lambda_l2=1e-1 was used here as a stand-in for 'the regularized "
-          f"model' -- this codebase's LAMBDA_GRID for fit_dcc_topo_reg is scaled "
-          f"O(1e-4 to 1e-1), NOT the same 4000 reported elsewhere for the committed "
-          f"dcc_topo_reg_results.npy. That 4000 figure comes from a different lambda "
-          f"parameterization/scale used in the full pipeline run -- flagging this "
-          f"explicitly rather than silently treating them as the same regularization "
-          f"strength. Worth reconciling before trusting this regularized OOS number.")
 
 
 if __name__ == "__main__":
