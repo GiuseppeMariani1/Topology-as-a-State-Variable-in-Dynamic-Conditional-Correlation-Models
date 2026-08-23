@@ -570,7 +570,7 @@ def run_crisis_dm_tests(R_seq_by_model, split, verbose=True):
             print(f"[{label}]  {n_overlap} overlapping test-period dates")
             print('='*66)
 
-        z_crisis = z_test_full[mask.values]
+        z_crisis = z_test_full[mask]
         window_results = {}
 
         pairs = [
@@ -580,8 +580,8 @@ def run_crisis_dm_tests(R_seq_by_model, split, verbose=True):
         for m1, m2 in pairs:
             if m1 not in R_seq_by_model or m2 not in R_seq_by_model:
                 continue
-            R1_crisis = R_seq_by_model[m1][mask.values]
-            R2_crisis = R_seq_by_model[m2][mask.values]
+            R1_crisis = R_seq_by_model[m1][mask]
+            R2_crisis = R_seq_by_model[m2][mask]
 
             if verbose:
                 print(f"\nDM: {m1} vs {m2}  (crisis subperiod only)")
