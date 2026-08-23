@@ -10,7 +10,7 @@ This repository implements and rigorously tests **TopoDCC**, an extension of the
 
 The core idea, motivated by Gidea & Katz (2018), is that the geometric structure of the multivariate return point cloud carries information about market regime changes that is not explained by volatility, autocorrelation, or realized correlation alone. Unlike prior work that uses topology as an external, descriptive feature (a crash-detection index, an MST-based diagnostic), this project treats it as an **endogenous state variable** inside the model's own recursion.
 
-**Headline finding:** across every configuration tested — linear encoder, 8+ rolling window sizes (21–400 days), levels and rate-of-change (velocity) features, regularized and unregularized fits, standard and crisis-restricted out-of-sample splits — TopoDCC does not forecast correlation dynamics better than a two-parameter baseline DCC model out-of-sample. The in-sample improvement reported early in this project (+420 log-likelihood nats) reflects overfitting, confirmed directly via a proper train/test split. This is a rigorously evidenced negative result; see `RESULTS.md` for the full chronology and every test performed.
+**Headline finding:** across every configuration tested: linear encoder, 8+ rolling window sizes (21–400 days), levels and rate-of-change (velocity) features, regularized and unregularized fits, standard and crisis-restricted out-of-sample splits the TopoDCC does not forecast correlation dynamics better than a two-parameter baseline DCC model out-of-sample. The in-sample improvement reported early in this project (+420 log-likelihood nats) reflects overfitting, confirmed directly via a proper train/test split. This is a rigorously evidenced negative result; see `RESULTS.md` for the full chronology and every test performed.
 
 ---
 
@@ -45,11 +45,11 @@ Raw Prices
 
 ### Key Design Choices
 
-- **Assets:** SPY, EEM, GLD, TLT, DBC — chosen for cross-asset geometric diversity (equity, EM, gold, rates, commodities). Sample: 2006-02 to 2025-12 (DBC's Feb 2006 inception is the binding start-date constraint).
+- **Assets:** SPY, EEM, GLD, TLT, DBC were chosen for cross-asset geometric diversity (equity, EM, gold, rates, commodities). Sample: 2006-02 to 2025-12 (DBC's Feb 2006 inception is the binding start-date constraint).
 - **Homology degree:** H1 only (loop structure), following Gidea & Katz (2018).
-- **TopoDCC parameterization:** `a_t = σ(w_a·φ_t + bias_a)`, `b_t = σ(w_b·φ_t + bias_b)`, a single linear layer — deliberately kept simple; an MLP encoder was considered and rejected (see `RESULTS.md`, July 2026) since added capacity would worsen the exact overfitting risk under investigation.
+- **TopoDCC parameterization:** `a_t = σ(w_a·φ_t + bias_a)`, `b_t = σ(w_b·φ_t + bias_b)`, a single linear layer we deliberately kept simple; an MLP encoder was considered and rejected (see `RESULTS.md`, July 2026) since added capacity would worsen the exact overfitting risk under investigation.
 - **Regularization:** Ridge (L2) penalty on `w_a`/`w_b`, fit via Adam with early stopping.
-- **aDCC baseline:** Cappiello-Engle-Sheppard (2006) asymmetric extension — the harder benchmark. Result: underperforms vanilla DCC on this dataset (LR=-18.73, p=1.0).
+- **aDCC baseline:** Cappiello-Engle-Sheppard (2006) asymmetric extension supposedly the harder benchmark. Result: underperforms vanilla DCC on this dataset (LR=-18.73, p=1.0).
 - **Diebold-Mariano test:** HAC/Newey-West variance (Bartlett kernel), Harvey-Leybourne-Newbold small-sample correction. Three losses: QLIKE (primary), Frobenius (robustness), portfolio squared-return (economic).
 - **Out-of-sample evaluation:** chronological train/test split (80/20 by default, or an explicit `--split-date`), features standardized on train statistics only, models fit on train and forward-recursed into the held-out period.
 
@@ -63,7 +63,7 @@ Raw Prices
 | `lpnorm_speed` (9 features, Δφ_t, k=5) | 50, 60, 75, 250 |
 | `lpnorm_levels_speed` (18 features) | 60, 250 |
 
-None beat baseline DCC out-of-sample on QLIKE with a robust, replicated result. See `RESULTS.md` for every number, including the mid-project bug (window overrides silently not propagating to the derived `lpnorm` feature file) that initially produced a false "confirmation" at windows 60/75 — caught, fixed, and re-run before being trusted.
+None beat baseline DCC out-of-sample on QLIKE with a robust, replicated result. See `RESULTS.md` for every number, including the mid-project bug (window overrides silently not propagating to the derived `lpnorm` feature file) that initially produced a false "confirmation" at windows 60/75: caught, fixed, and re-run before being trusted.
 
 ### Crisis-subperiod testing
 
