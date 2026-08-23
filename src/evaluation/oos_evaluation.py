@@ -86,10 +86,14 @@ from src.portfolio.backtest import (portfolio_returns, turnover,
 from src.evaluation.diebold_mariano import dm_test_all_losses, dm_test, portfolio_sq_loss
 
 
-def prepare_split(train_frac=0.8, features='lpnorm', verbose=True):
+def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, verbose=True):
     """
     Load aligned residuals + topology features, split chronologically,
     and standardize features on training statistics only.
+
+    If pca_components is not None, fit PCA on the training set and
+    transform both train and test. PCA is fit only on train data to avoid
+    lookahead (using test information to set the projection).
 
     Returns a dict of everything downstream steps need.
     """
@@ -109,6 +113,17 @@ def prepare_split(train_frac=0.8, features='lpnorm', verbose=True):
     X_mean = X_train_raw.mean(axis=0)
     X_std = X_train_raw.std(axis=0) + 1e-8
     X_all_std = (X_df.values - X_mean) / X_std
+
+    # Apply PCA if requested
+    if pca_components is not None:
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=pca_components)
+        X_train_std = X_all_std[:train_size]
+        pca.fit(X_train_std)
+        X_all_std = pca.transform(X_all_std)
+        if verbose:
+            print(f"\nPCA: {X_df.shape[1]} -> {pca_components} components")
+            print(f"  Explained variance ratio: {pca.explained_variance_ratio_.sum():.4f}")
 
     z_full = torch.tensor(z_df.values, dtype=torch.float32)
     X_full = torch.tensor(X_all_std, dtype=torch.float32)
@@ -370,6 +385,9 @@ def main():
                          help="L2 penalty for the regularized TopoDCC. Defaults to 4000 "
                               "(the value selected by the full-sample lambda search).")
     parser.add_argument('--features', default='lpnorm', choices=['lpnorm', 'landscape', 'pi'])
+    parser.add_argument('--pca', type=int, default=None,
+                         help='apply PCA to reduce features to N components (train-set-fit only, '
+                              'no lookahead). Only meaningful with --features landscape or pi.')
     parser.add_argument('--skip-adcc', action='store_true',
                          help="Skip the aDCC benchmark (faster).")
     parser.add_argument('--out', default='data/processed/oos_evaluation_results.npy')
@@ -379,7 +397,8 @@ def main():
     print("OUT-OF-SAMPLE EVALUATION")
     print("="*66)
 
-    split = prepare_split(train_frac=args.train_frac, features=args.features)
+    split = prepare_split(train_frac=args.train_frac, features=args.features,
+                          pca_components=args.pca)
 
     R_seq_by_model, timings = fit_all_train_only(
         split, n_iter=args.n_iter, lr=args.lr,
