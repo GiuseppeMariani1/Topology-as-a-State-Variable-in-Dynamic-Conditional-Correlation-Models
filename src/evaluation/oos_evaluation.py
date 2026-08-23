@@ -83,13 +83,32 @@ from src.portfolio.covariance import reconstruct_covariance
 from src.portfolio.weights import min_variance_weights_seq, equal_weights_seq
 from src.portfolio.backtest import (portfolio_returns, turnover,
                                      annualize_vol, annualize_sharpe)
-from src.evaluation.diebold_mariano import dm_test_all_losses, dm_test, portfolio_sq_loss
+from src.evaluation.diebold_mariano import dm_test_all_losses, dm_test, portfolio_sq_loss, qlike_loss_seq
 
 
-def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, window=None, verbose=True):
+def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, window=None,
+                   split_date=None, verbose=True):
     """
     Load aligned residuals + topology features, split chronologically,
     and standardize features on training statistics only.
+
+    split_date, if given, OVERRIDES train_frac and sets an exact cutoff
+    date instead of a fraction. This matters for crisis-period analysis:
+    with this project's sample (2006-2025) and a plain 80/20 split, the
+    test period lands around 2022-2025 -- which excludes COVID (2020),
+    the GFC (2008-09), and the EU debt crisis (2011-12) entirely, since
+    all three fall inside the 80% training portion. A literature precedent
+    for this kind of topology-forecasting claim (Souto 2023, "Topological
+    Tail Dependence") finds its positive result specifically concentrated
+    in a held-out COVID subsample -- their sample happens to end soon
+    enough after COVID that an 80/20 split naturally captures it. Ours
+    does not, unless the split date is moved explicitly.
+
+    Passing split_date='2019-12-31' pushes COVID, and the 2022 rate-hike
+    period, into the test set, at the cost of a smaller training sample
+    (~13 years instead of ~15). This is a deliberate methodological choice
+    to align with how the literature actually finds its effect, not an
+    arbitrary tuning choice.
 
     If window is not None, recompute TDA features for that window size
     before loading (via subprocess call to tda_pipeline.py).
@@ -195,10 +214,22 @@ def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, window
             )
 
     T = len(z_df)
-    train_size = int(T * train_frac)
+    if split_date is not None:
+        split_ts = pd.Timestamp(split_date)
+        train_size = int((z_df.index <= split_ts).sum())
+        if train_size == 0 or train_size == T:
+            raise ValueError(
+                f"split_date={split_date} produces train_size={train_size} out of "
+                f"{T} -- date is outside the sample range "
+                f"({z_df.index[0].date()} to {z_df.index[-1].date()})."
+            )
+        split_desc = f"explicit split_date={split_date}"
+    else:
+        train_size = int(T * train_frac)
+        split_desc = f"{train_frac:.0%} / {1-train_frac:.0%}"
 
     if verbose:
-        print(f"\nSplit: {train_size} train / {T - train_size} test  ({train_frac:.0%} / {1-train_frac:.0%})")
+        print(f"\nSplit: {train_size} train / {T - train_size} test  ({split_desc})")
         print(f"  Train: {z_df.index[0].date()} -> {z_df.index[train_size-1].date()}")
         print(f"  Test:  {z_df.index[train_size].date()} -> {z_df.index[-1].date()}")
 
@@ -466,12 +497,120 @@ def run_dm_tests(R_seq_by_model, split, port_returns, verbose=True):
     return results
 
 
+# Standard crisis windows, matching src/evaluation/stats_tests.py exactly so
+# a_t/b_t crisis-period behavior and OOS crisis-period forecast accuracy are
+# reported on identical date ranges rather than two slightly different
+# definitions drifting apart over time.
+CRISIS_WINDOWS = {
+    'GFC       (2008-07 to 2009-03)': ('2008-07-01', '2009-03-31'),
+    'EU Debt   (2011-07 to 2012-01)': ('2011-07-01', '2012-01-31'),
+    'COVID     (2020-02 to 2020-06)': ('2020-02-01', '2020-06-30'),
+    'Rates     (2022-01 to 2022-12)': ('2022-01-01', '2022-12-31'),
+}
+
+
+def run_crisis_dm_tests(R_seq_by_model, split, verbose=True):
+    """
+    Repeats the QLIKE/Frobenius DM tests restricted to whichever crisis
+    windows actually overlap the TEST period.
+
+    WHY THIS EXISTS
+      Souto (2023, "Topological Tail Dependence") finds persistent
+      homology's forecasting advantage over baseline models is
+      concentrated specifically in a held-out COVID subsample, not
+      spread evenly across the full test period -- full-sample DM tests
+      in that paper are often insignificant while the same comparison
+      restricted to the 2020 crisis is significant. A full-sample-only
+      DM test, which is all this project has run until now, could
+      therefore miss a real effect that only shows up during stress
+      periods, or dilute it into non-significance by averaging against
+      long stretches of calm markets where topology plausibly adds
+      nothing.
+
+    ONLY windows with test-period overlap are actually tested -- with the
+    default 80/20 split on this project's sample (2006-2025), the test
+    period lands around 2022-2025, so GFC/EU-Debt/COVID fall entirely in
+    TRAINING data and have zero test-period observations. Silently
+    running a "crisis DM test" against zero dates would produce a
+    meaningless or errored result; this function checks overlap first
+    and reports explicitly which windows were skipped and why, rather
+    than papering over the gap. Use --split-date 2019-12-31 (or similar)
+    to actually place COVID inside the test period if that is the
+    comparison you want.
+    """
+    train_size = split['train_size']
+    test_dates = split['dates'][train_size:]
+    z_test_full = split['z_full'][train_size:].numpy()
+
+    results = {}
+
+    if verbose:
+        print(f"\nTest period: {test_dates[0].date()} -> {test_dates[-1].date()}")
+
+    for label, (start, end) in CRISIS_WINDOWS.items():
+        start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
+        mask = (test_dates >= start_ts) & (test_dates <= end_ts)
+        n_overlap = int(mask.sum())
+
+        if n_overlap == 0:
+            if verbose:
+                print(f"\n[{label}] 0 test-period dates overlap this window -- "
+                      f"entirely inside training data with the current split. Skipped.")
+            continue
+
+        if n_overlap < 20:
+            if verbose:
+                print(f"\n[{label}] only {n_overlap} test-period dates overlap -- "
+                      f"too few for a reliable DM test (partial window at the "
+                      f"train/test boundary). Skipped.")
+            continue
+
+        if verbose:
+            print(f"\n{'='*66}")
+            print(f"[{label}]  {n_overlap} overlapping test-period dates")
+            print('='*66)
+
+        z_crisis = z_test_full[mask.values]
+        window_results = {}
+
+        pairs = [
+            ('TopoDCC (unreg)', 'Baseline DCC'),
+            ('TopoDCC (reg)', 'Baseline DCC'),
+        ]
+        for m1, m2 in pairs:
+            if m1 not in R_seq_by_model or m2 not in R_seq_by_model:
+                continue
+            R1_crisis = R_seq_by_model[m1][mask.values]
+            R2_crisis = R_seq_by_model[m2][mask.values]
+
+            if verbose:
+                print(f"\nDM: {m1} vs {m2}  (crisis subperiod only)")
+            l1 = qlike_loss_seq(R1_crisis, z_crisis)
+            l2 = qlike_loss_seq(R2_crisis, z_crisis)
+            stat, p = dm_test(l1, l2, name_1=m1, name_2=m2, verbose=verbose)
+            window_results[f"{m1} vs {m2}"] = {'dm_stat': stat, 'p_value': p, 'n': n_overlap}
+
+        results[label] = window_results
+
+    if not results and verbose:
+        print("\nNo crisis window had sufficient test-period overlap -- "
+              "consider --split-date to move the test period earlier "
+              "(e.g. --split-date 2019-12-31 to capture COVID).")
+
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Out-of-sample evaluation: train/test split, portfolio backtest, DM tests"
     )
     parser.add_argument('--train-frac', type=float, default=0.8,
-                         help="Fraction of the sample used for training (chronological split).")
+                         help="Fraction of the sample used for training (chronological split). "
+                              "Ignored if --split-date is given.")
+    parser.add_argument('--split-date', default=None,
+                         help="Exact train/test cutoff date (e.g. 2019-12-31), overriding "
+                              "--train-frac. Needed to place specific crisis windows (COVID, "
+                              "GFC, etc.) inside the test period -- see prepare_split docstring.")
     parser.add_argument('--n-iter', type=int, default=500,
                          help="Adam iterations per fit.")
     parser.add_argument('--lr', type=float, default=0.01)
@@ -500,7 +639,8 @@ def main():
     print("="*66)
 
     split = prepare_split(train_frac=args.train_frac, features=args.features,
-                          pca_components=args.pca, window=args.window)
+                          pca_components=args.pca, window=args.window,
+                          split_date=args.split_date)
 
     R_seq_by_model, timings = fit_all_train_only(
         split, n_iter=args.n_iter, lr=args.lr,
@@ -527,13 +667,20 @@ def main():
     print("="*66)
     dm_results = run_dm_tests(R_seq_by_model, split, port_returns)
 
+    print("\n" + "="*66)
+    print("CRISIS-SUBPERIOD DIEBOLD-MARIANO TESTS")
+    print("="*66)
+    crisis_dm_results = run_crisis_dm_tests(R_seq_by_model, split)
+
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     np.save(args.out, {
         'summary': summary,
         'dm_results': dm_results,
+        'crisis_dm_results': crisis_dm_results,
         'timings': timings,
         'train_size': split['train_size'],
         'train_frac': args.train_frac,
+        'split_date': args.split_date,
         'test_dates': split['dates'][split['train_size']:],
         'R_seq_test': R_seq_by_model,
         'portfolio_returns': port_returns,
