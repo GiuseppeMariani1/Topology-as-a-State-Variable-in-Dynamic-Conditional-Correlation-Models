@@ -28,13 +28,18 @@ import pandas as pd
 from ripser import ripser
 from persim import wasserstein
 from sklearn.decomposition import PCA
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from src.data.loader import load_config
 from joblib import Parallel, delayed
 import warnings
 warnings.filterwarnings('ignore')
 
 #  CONFIGURATION (Will be overridden by function arguments, fallback in case config.yaml has issue.)
 
-WINDOW         = 250  # 1-year rolling window (trading days)
+WINDOW         = None  # set from config or CLI override
 STEP           = 1      # daily rolling
 EMBED_DIM      = 5    # delay-embedding dimension
 PCA_DIM        = 10     # PCA reduction before Ripser
@@ -327,15 +332,25 @@ def run_tda_pipeline(log_returns_df,
 #STANDALONE EXECUTION
 
 if __name__ == "__main__":
+    import argparse
     import joblib
     import os
     import sys
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
     from src.data.loader import load_config
 
+    parser = argparse.ArgumentParser(description="Run TDA pipeline with optional window override")
+    parser.add_argument('--window', type=int, default=None,
+                        help='override the config window size (default: use config)')
+    args = parser.parse_args()
+
     config = load_config()
     topo_cfg = config['topology']
     paths = config['paths']
+
+    if args.window is not None:
+        topo_cfg['window'] = args.window
+        print(f"Using window={args.window} (overriding config)")
 
     log_returns = pd.read_parquet(paths['log_returns'])
 

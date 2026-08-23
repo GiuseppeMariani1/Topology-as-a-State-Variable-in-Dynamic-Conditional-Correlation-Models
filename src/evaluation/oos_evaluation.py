@@ -86,10 +86,13 @@ from src.portfolio.backtest import (portfolio_returns, turnover,
 from src.evaluation.diebold_mariano import dm_test_all_losses, dm_test, portfolio_sq_loss
 
 
-def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, verbose=True):
+def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, window=None, verbose=True):
     """
     Load aligned residuals + topology features, split chronologically,
     and standardize features on training statistics only.
+
+    If window is not None, recompute TDA features for that window size
+    before loading (via subprocess call to tda_pipeline.py).
 
     If pca_components is not None, fit PCA on the training set and
     transform both train and test. PCA is fit only on train data to avoid
@@ -97,6 +100,23 @@ def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, verbos
 
     Returns a dict of everything downstream steps need.
     """
+    import subprocess
+    
+    if window is not None:
+        if verbose:
+            print(f"\nRecomputing TDA features with window={window}...")
+        result = subprocess.run(
+            [sys.executable, '-m', 'src.topology.tda_pipeline', f'--window', str(window)],
+            cwd=os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')),
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print("TDA recomputation failed:")
+            print(result.stderr)
+            raise RuntimeError("TDA pipeline failed")
+        if verbose:
+            print("TDA recomputation complete.")
+    
     config = load_config()
     z_df, X_df, paths = load_aligned_data(config=config, features=features, verbose=verbose)
 
@@ -385,6 +405,8 @@ def main():
                          help="L2 penalty for the regularized TopoDCC. Defaults to 4000 "
                               "(the value selected by the full-sample lambda search).")
     parser.add_argument('--features', default='lpnorm', choices=['lpnorm', 'landscape', 'pi'])
+    parser.add_argument('--window', type=int, default=None,
+                         help='TDA window size override (triggers tda_pipeline recomputation)')
     parser.add_argument('--pca', type=int, default=None,
                          help='apply PCA to reduce features to N components (train-set-fit only, '
                               'no lookahead). Only meaningful with --features landscape or pi.')
@@ -398,7 +420,7 @@ def main():
     print("="*66)
 
     split = prepare_split(train_frac=args.train_frac, features=args.features,
-                          pca_components=args.pca)
+                          pca_components=args.pca, window=args.window)
 
     R_seq_by_model, timings = fit_all_train_only(
         split, n_iter=args.n_iter, lr=args.lr,
