@@ -46,6 +46,10 @@ paths:
   garch_sigma: data/processed/garch_sigma.parquet
   tda_features_landscape: data/processed/tda_features_landscape.parquet
   tda_features_lpnorm: data/processed/tda_features_lpnorm.parquet 
+  tda_features_lpnorm_speed: data/processed/tda_features_lpnorm_speed.parquet
+  tda_features_lpnorm_levels_speed: data/processed/tda_features_lpnorm_levels_speed.parquet
+  tda_features_landscape_speed: data/processed/tda_features_landscape_speed.parquet
+  tda_features_landscape_levels_speed: data/processed/tda_features_landscape_levels_speed.parquet
   tda_features_pi: data/processed/tda_features_pi.parquet
   dcc_baseline: data/processed/dcc_baseline_results.npy
   dcc_adcc: data/processed/dcc_adcc_results.npy

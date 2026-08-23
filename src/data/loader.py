@@ -53,6 +53,13 @@ def load_aligned_data(config=None, features='lpnorm', verbose=True):
         'lpnorm':    'tda_features_lpnorm',
         'landscape': 'tda_features_landscape',
         'pi':        'tda_features_pi',
+        # Velocity variants, built by src/topology/velocity_features.py.
+        # '_speed' has the same dimensionality as its source (differences
+        # only); '_levels_speed' concatenates levels and differences.
+        'lpnorm_speed':           'tda_features_lpnorm_speed',
+        'lpnorm_levels_speed':    'tda_features_lpnorm_levels_speed',
+        'landscape_speed':        'tda_features_landscape_speed',
+        'landscape_levels_speed': 'tda_features_landscape_levels_speed',
     }[features]
 
     garch_residuals = pd.read_parquet(paths['garch_residuals'])

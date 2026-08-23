@@ -102,13 +102,14 @@ def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, window
     """
     import subprocess
     
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
     if window is not None:
         if verbose:
             print(f"\nRecomputing TDA features with window={window}...")
         result = subprocess.run(
-            [sys.executable, '-m', 'src.topology.tda_pipeline', f'--window', str(window)],
-            cwd=os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')),
-            capture_output=True, text=True
+            [sys.executable, '-m', 'src.topology.tda_pipeline', '--window', str(window)],
+            cwd=repo_root, capture_output=True, text=True
         )
         if result.returncode != 0:
             print("TDA recomputation failed:")
@@ -116,6 +117,27 @@ def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, window
             raise RuntimeError("TDA pipeline failed")
         if verbose:
             print("TDA recomputation complete.")
+
+        # Velocity features are DERIVED from the TDA feature file, so a
+        # window change invalidates them too. Without this they would
+        # silently stay at whatever window they were last built with,
+        # and the run would report results for a window it didn't use.
+        if features.endswith('_speed'):
+            src = features.replace('_levels_speed', '').replace('_speed', '')
+            mode = 'levels_speed' if features.endswith('_levels_speed') else 'speed'
+            if verbose:
+                print(f"Rebuilding {mode} features from {src} at window={window}...")
+            result = subprocess.run(
+                [sys.executable, '-m', 'src.topology.velocity_features',
+                 '--source', src, '--mode', mode],
+                cwd=repo_root, capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                print("Velocity feature rebuild failed:")
+                print(result.stderr)
+                raise RuntimeError("velocity_features failed")
+            if verbose:
+                print("Velocity rebuild complete.")
     
     config = load_config()
     z_df, X_df, paths = load_aligned_data(config=config, features=features, verbose=verbose)
@@ -404,7 +426,13 @@ def main():
     parser.add_argument('--lambda-reg', type=float, default=None,
                          help="L2 penalty for the regularized TopoDCC. Defaults to 4000 "
                               "(the value selected by the full-sample lambda search).")
-    parser.add_argument('--features', default='lpnorm', choices=['lpnorm', 'landscape', 'pi'])
+    parser.add_argument('--features', default='lpnorm',
+                         choices=['lpnorm', 'landscape', 'pi',
+                                  'lpnorm_speed', 'lpnorm_levels_speed',
+                                  'landscape_speed', 'landscape_levels_speed'],
+                         help="'_speed' variants use rate-of-change instead of levels "
+                              "(same dimensionality as the source); '_levels_speed' "
+                              "concatenates both (double dimensionality)")
     parser.add_argument('--window', type=int, default=None,
                          help='TDA window size override (triggers tda_pipeline recomputation)')
     parser.add_argument('--pca', type=int, default=None,
