@@ -291,32 +291,97 @@ if __name__ == "__main__":
                         help='override the default (500 for both modes; p resolves to 1/n)')
     parser.add_argument('--fresh', action='store_true',
                         help='refit real features instead of reusing the cached ll')
+    parser.add_argument('--features', default='lpnorm',
+                        choices=['lpnorm', 'landscape', 'pi',
+                                 'lpnorm_speed', 'lpnorm_levels_speed',
+                                 'landscape_speed', 'landscape_levels_speed'],
+                        help="which feature set to permutation-test. Non-lpnorm sets "
+                             "always refit fresh (no cache lookup) and require a "
+                             "--lambda-l2 for --reg since there is no per-feature-set "
+                             "saved grid-search result to read from.")
+    parser.add_argument('--window', type=int, default=None,
+                        help="TDA window override -- rebuilds tda_pipeline (and the "
+                             "derived velocity features, if --features is a _speed "
+                             "variant) before running. Omit to use whatever window "
+                             "the feature files on disk currently reflect.")
+    parser.add_argument('--lambda-l2', type=float, default=None,
+                        help="required with --reg when --features is not 'lpnorm' -- "
+                             "there is no saved grid-search result to read lambda from "
+                             "for other feature sets, so it must be supplied explicitly.")
     args = parser.parse_args()
 
+    if args.window is not None:
+        import subprocess
+        import sys as _sys
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        print(f"Recomputing TDA features with window={args.window}...")
+        result = subprocess.run(
+            [_sys.executable, '-m', 'src.topology.tda_pipeline', '--window', str(args.window)],
+            cwd=repo_root, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print("TDA recomputation failed:")
+            print(result.stderr)
+            raise SystemExit(1)
+        print("TDA recomputation complete.")
+
+        if args.features.endswith('_speed'):
+            src = args.features.replace('_levels_speed', '').replace('_speed', '')
+            mode = 'levels_speed' if args.features.endswith('_levels_speed') else 'speed'
+            print(f"Rebuilding {mode} features from {src} at window={args.window}...")
+            result = subprocess.run(
+                [_sys.executable, '-m', 'src.topology.velocity_features',
+                 '--source', src, '--mode', mode],
+                cwd=repo_root, capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                print("Velocity feature rebuild failed:")
+                print(result.stderr)
+                raise SystemExit(1)
+            print("Velocity rebuild complete.")
+
     config = load_config()
-    garch_residuals, tda_features, paths = load_aligned_data(config)
+    garch_residuals, tda_features, paths = load_aligned_data(config, features=args.features)
     print(f"Feature columns: {list(tda_features.columns)}")
 
     cfg = config['models']['topo_reg' if args.reg else 'topo']
 
     lambda_l2 = None
     if args.reg:
-        # Read the validated best lambda from the saved grid-search output
-        # rather than hardcoding, so this can't silently go stale.
-        reg_path = paths.get('dcc_topo_reg', 'data/processed/dcc_topo_reg_results.npy')
-        try:
-            lambda_l2 = float(np.load(reg_path, allow_pickle=True).item()['lambda_l2'])
-            print(f"Using best_lambda={lambda_l2:.0e} from {reg_path}")
-        except (FileNotFoundError, KeyError) as exc:
-            raise SystemExit(
-                f"Could not read the best lambda from {reg_path} ({exc}) -- run "
-                f"dcc_topo_reg.py first so this uses the validated optimum."
-            )
+        if args.features == 'lpnorm':
+            # Read the validated best lambda from the saved grid-search output
+            # rather than hardcoding, so this can't silently go stale.
+            reg_path = paths.get('dcc_topo_reg', 'data/processed/dcc_topo_reg_results.npy')
+            try:
+                lambda_l2 = float(np.load(reg_path, allow_pickle=True).item()['lambda_l2'])
+                print(f"Using best_lambda={lambda_l2:.0e} from {reg_path}")
+            except (FileNotFoundError, KeyError) as exc:
+                raise SystemExit(
+                    f"Could not read the best lambda from {reg_path} ({exc}) -- run "
+                    f"dcc_topo_reg.py first so this uses the validated optimum."
+                )
+        else:
+            # There is no saved grid-search result for non-lpnorm feature sets
+            # (the grid search was only ever run against the original 9-feature
+            # lpnorm set at window=250). Silently reusing that lambda here
+            # would be applying a value tuned for a different feature space
+            # entirely -- require it explicitly instead.
+            if args.lambda_l2 is None:
+                raise SystemExit(
+                    f"--reg with --features {args.features!r} requires --lambda-l2 "
+                    f"explicitly -- there is no saved grid-search result for this "
+                    f"feature set to read a validated lambda from."
+                )
+            lambda_l2 = args.lambda_l2
+            print(f"Using --lambda-l2={lambda_l2:.0e} (explicitly supplied, not from a "
+                  f"saved grid search for this feature set)")
 
-    # Reuse the cached real-features ll when the corresponding model has
-    # already been fitted under identical settings; --fresh forces a refit.
+    # Reuse the cached real-features ll only for the original lpnorm set at
+    # whatever window is currently on disk -- for any other feature set (or
+    # a --window override) there is no guarantee the cached file matches
+    # what was just loaded, so always refit fresh in that case.
     cached_real_ll = None
-    if not args.fresh and not args.reg:
+    if not args.fresh and not args.reg and args.features == 'lpnorm' and args.window is None:
         topo_path = paths.get('dcc_topo_lpnorm', 'data/processed/dcc_topo_lpnorm_results.npy')
         try:
             cached_real_ll = np.load(topo_path, allow_pickle=True).item()['ll_final']
