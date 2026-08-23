@@ -118,6 +118,35 @@ def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, window
         if verbose:
             print("TDA recomputation complete.")
 
+        # tda_pipeline.py only writes the raw landscape file
+        # (tda_features_landscape.parquet). The 9-feature lpnorm summary is
+        # a SEPARATE derived file produced by lp_norm_features.py, which
+        # reads whatever landscape file is currently on disk and takes no
+        # window argument of its own -- it just processes what's there.
+        #
+        # Omitting this step was a real bug in every --window run before
+        # this fix: it silently left tda_features_lpnorm.parquet at
+        # whatever window it was last built with, while printing "TDA
+        # recomputation complete" as if the full chain had updated.
+        # Confirmed directly: window=50/60/75 runs on 'lpnorm' and
+        # 'lpnorm_speed' all produced bit-identical train/test splits,
+        # identical baseline DCC fits, and (for the permutation test)
+        # identical real_ll/permuted-mean/permuted-std/p-value to two
+        # decimal places -- they were reading the same stale lpnorm file
+        # every time, regardless of --window.
+        if verbose:
+            print("Deriving lpnorm features from the updated landscape file...")
+        result = subprocess.run(
+            [sys.executable, '-m', 'src.topology.lp_norm_features'],
+            cwd=repo_root, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print("lp_norm_features.py failed:")
+            print(result.stderr)
+            raise RuntimeError("lp_norm_features.py failed")
+        if verbose:
+            print("lpnorm derivation complete.")
+
         # Velocity features are DERIVED from the TDA feature file, so a
         # window change invalidates them too. Without this they would
         # silently stay at whatever window they were last built with,
@@ -141,6 +170,29 @@ def prepare_split(train_frac=0.8, features='lpnorm', pca_components=None, window
     
     config = load_config()
     z_df, X_df, paths = load_aligned_data(config=config, features=features, verbose=verbose)
+
+    # Sanity check: if a --window override was requested, confirm the file
+    # that was just loaded actually reflects it, rather than silently
+    # trusting the subprocess calls above. A window-W TDA computation
+    # should produce a first valid date roughly W trading days after the
+    # raw log-returns start; if the loaded index looks unchanged from
+    # before the override, the recomputation chain didn't actually update
+    # the file this run is about to use. This exact failure mode is what
+    # produced bit-identical window=50/60/75 results earlier in this
+    # project -- see the comments in the --window block above.
+    if window is not None:
+        expected_min_start_offset = window - 20  # loose tolerance for step/embed_dim effects
+        log_returns_start = pd.read_parquet(config['paths']['log_returns']).index[0]
+        actual_offset = (X_df.index[0] - log_returns_start).days
+        if actual_offset * (252 / 365) < expected_min_start_offset * 0.5:
+            raise RuntimeError(
+                f"Loaded features start at {X_df.index[0].date()}, only "
+                f"~{actual_offset} calendar days after the raw data starts "
+                f"({log_returns_start.date()}) -- too soon for a window={window} "
+                f"computation. The feature file likely was NOT actually "
+                f"regenerated at this window; check the subprocess calls above "
+                f"for silent failures before trusting these results."
+            )
 
     T = len(z_df)
     train_size = int(T * train_frac)

@@ -325,6 +325,26 @@ if __name__ == "__main__":
             raise SystemExit(1)
         print("TDA recomputation complete.")
 
+        # See oos_evaluation.py for the full explanation: tda_pipeline.py
+        # only writes tda_features_landscape.parquet. The 9-feature lpnorm
+        # file is a SEPARATE derived output of lp_norm_features.py, which
+        # was missing here -- meaning every prior --window run on this
+        # script silently reused a stale lpnorm file regardless of window.
+        # This is confirmed to be exactly what produced the window=60 and
+        # window=75 permutation tests coming back bit-identical (same
+        # real_ll, same permuted mean/std, same 26/500 count) -- both were
+        # reading the same stale window=250 data.
+        print("Deriving lpnorm features from the updated landscape file...")
+        result = subprocess.run(
+            [_sys.executable, '-m', 'src.topology.lp_norm_features'],
+            cwd=repo_root, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print("lp_norm_features.py failed:")
+            print(result.stderr)
+            raise SystemExit(1)
+        print("lpnorm derivation complete.")
+
         if args.features.endswith('_speed'):
             src = args.features.replace('_levels_speed', '').replace('_speed', '')
             mode = 'levels_speed' if args.features.endswith('_levels_speed') else 'speed'
