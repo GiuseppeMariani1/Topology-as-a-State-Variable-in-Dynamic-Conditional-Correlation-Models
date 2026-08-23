@@ -17,7 +17,6 @@ Shutdown when complete.
 import subprocess
 import sys
 import time
-import platform
 
 def run_cmd(cmd, label):
     """Run a command and report status."""
@@ -87,18 +86,8 @@ def main():
     print(f"\n{'='*70}")
     print(f"All runs complete at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*70}")
-
-    # Shutdown
-    print("\nShutting down in 30 seconds...")
-    time.sleep(30)
-
-    system = platform.system()
-    if system == 'Windows':
-        subprocess.run('shutdown /s /t 0')
-    elif system == 'Darwin':  # macOS
-        subprocess.run('osascript -e "tell app \\"System Events\\" to shut down"')
-    else:  # Linux
-        subprocess.run('sudo shutdown -h now')
+    print("\nResults saved. Check them in the morning.")
+    print("Manual shutdown when ready.")
 
 if __name__ == "__main__":
     main()
