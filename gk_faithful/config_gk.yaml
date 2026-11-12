@@ -1,0 +1,75 @@
+# Configuration for the Gidea & Katz (2018) faithful add-on.
+#
+# This file is read ONLY by gk_faithful/. The original thesis pipeline keeps
+# reading config/config.yaml and never sees anything here.
+#
+# Inputs (log returns, GARCH residuals, GARCH sigma) are READ from the
+# original thesis paths in config/config.yaml. Every output of this add-on is
+# WRITTEN under output_dir below, so no thesis file can be overwritten.
+
+output_dir: data/processed_gk
+
+point_cloud:
+  # G&K use w = 50 for their main results and w = 100 as a robustness check.
+  windows: [50, 100]
+  step: 1
+  # G&K build the Rips complex on the raw daily log-return vectors: one day
+  # is one point in R^d, no delay embedding, no PCA, no per-window scaling.
+  # Set to true only to test sensitivity to per-window standardisation
+  # (the thesis pipeline standardises each window).
+  standardise_window: false
+  n_jobs: -1
+
+norms:
+  # G&K report both L1 and L2 norms of the full persistence landscape.
+  p: [1, 2]
+
+spectral:
+  # G&K (following Guttal et al., 2016) use a 500-day trailing window.
+  # 250 is included to keep more of the run-up to Lehman in the sample.
+  windows: [250, 500]
+  # The paper does not define which frequencies count as "low". This is the
+  # fraction of the positive Fourier frequencies (lowest first) whose
+  # periodogram ordinates are averaged. Documented assumption, not from G&K.
+  low_freq_fraction: 0.125
+  # Remove a linear trend inside each trailing window before the periodogram
+  # and the variance, so a slow drift in the norm is not read as variance.
+  detrend: linear
+
+diagnostic:
+  # Mann-Kendall horizon before each event, as in G&K.
+  pre_event_days: 250
+  events:
+    GFC (Lehman): '2008-09-15'
+    EU debt: '2011-08-01'
+    China/oil: '2015-08-24'
+    Volmageddon: '2018-02-05'
+    Q4 2018: '2018-12-24'
+    COVID: '2020-03-20'
+    Rates: '2022-01-03'
+
+timing:
+  # In the thesis, the feature row dated t is computed from a window that
+  # ENDS on day t, and dcc_topo_recursion uses it (a_t, b_t) to build R_t,
+  # which is then scored against z_t. So day t's own return enters the
+  # forecast of day t's correlation: a one-day look-ahead.
+  # feature_lag: 1 shifts every feature by one trading day so R_t only uses
+  # information up to t-1 (a genuine one-step-ahead forecast).
+  # feature_lag: 0 reproduces the thesis convention exactly.
+  feature_lag: 1
+
+experiments:
+  # Feature sets passed to the DCC:
+  #   gk        : [variance, low-frequency spectral density] of the L2 and
+  #               L1 norm series  -> 4 features (fewer than the thesis's 9)
+  #   gk_l2     : the same for the L2 norm only -> 2 features
+  #   levels_gk : the thesis's original 9 lpnorm features + gk_l2
+  feature_sets: [gk_l2, gk, levels_gk]
+  # Split choices. 'frac' is the thesis default (80/20). The COVID split
+  # puts 2020 and 2022 inside the test period (see oos_evaluation docstring).
+  splits:
+    frac80: {train_frac: 0.8}
+    covid: {split_date: '2019-12-31'}
+  n_iter: 500
+  lr: 0.01
+  n_permutations: 500
