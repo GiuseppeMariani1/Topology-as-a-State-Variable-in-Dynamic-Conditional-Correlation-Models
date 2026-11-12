@@ -15,22 +15,26 @@ Default grid: 3 feature sets x 2 windows (50, 100) x 2 spectral windows
 
 USAGE
   python -m gk_faithful.run_all                     # stages 1-4, 6
+  python -m gk_faithful.run_all --jobs 12           # 12 OOS runs at once
   python -m gk_faithful.run_all --permutations      # adds stage 5
   python -m gk_faithful.run_all --only diagnostic   # stages 1-3 only
   python -m gk_faithful.run_all --summary-only
 """
 
 import argparse
+import concurrent.futures
 import glob
 import os
+import subprocess
+import sys
 import time
 import traceback
 
 import numpy as np
 import pandas as pd
 
-from gk_faithful import diagnostic_gk, run_oos, run_permutation, spectral_gk, tda_gk
-from gk_faithful.common import (_guard_output, load_gk_config, load_thesis_paths,
+from gk_faithful import diagnostic_gk, run_permutation, spectral_gk, tda_gk
+from gk_faithful.common import (REPO_ROOT, _guard_output, load_gk_config, load_thesis_paths,
                                 norms_path, out_dir, result_path, run_tag, spectral_path)
 
 TOPO = ('TopoDCC (unreg)', 'TopoDCC (reg)')
@@ -64,9 +68,40 @@ def _split_kwargs(spec):
     return {'train_frac': spec.get('train_frac', 0.8), 'split_date': spec.get('split_date')}
 
 
-def run_oos_grid(gk, rebuild, skip_adcc):
+def _oos_command(feats, w, m, split_name, spec, ex, skip_adcc):
+    cmd = [sys.executable, '-m', 'gk_faithful.run_oos',
+           '--features', feats, '--window', str(w), '--m', str(m),
+           '--split-name', split_name,
+           '--n-iter', str(ex['n_iter']), '--lr', str(ex['lr'])]
+    kw = _split_kwargs(spec)
+    if kw['split_date']:
+        cmd += ['--split-date', str(kw['split_date'])]
+    else:
+        cmd += ['--train-frac', str(kw['train_frac'])]
+    if skip_adcc:
+        cmd.append('--skip-adcc')
+    return cmd
+
+
+def _run_one(tag, cmd, log_path, env):
+    t0 = time.time()
+    with open(log_path, 'w', encoding='utf-8') as log:
+        rc = subprocess.run(cmd, cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT,
+                            env=env).returncode
+    return tag, rc, time.time() - t0
+
+
+def run_oos_grid(gk, rebuild, skip_adcc, jobs):
+    """
+    Each OOS run is independent, so they run as separate processes, `jobs`
+    at a time. The DCC recursion is a sequential day-by-day loop, so one
+    process cannot use more than about one core; parallelism has to come
+    from running several fits at once. Each process is pinned to one
+    thread (OMP/MKL) so `jobs` processes do not fight over the cores.
+    Output of each run goes to data/processed_gk/logs/<tag>.log.
+    """
     ex = gk['experiments']
-    failures = []
+    todo = []
     for feats in ex['feature_sets']:
         for w in gk['point_cloud']['windows']:
             for m in gk['spectral']['windows']:
@@ -75,14 +110,31 @@ def run_oos_grid(gk, rebuild, skip_adcc):
                     if not rebuild and os.path.exists(result_path('oos', tag)):
                         print(f"skip (exists): {tag}")
                         continue
-                    _stamp(f"OOS {tag}")
-                    try:
-                        run_oos.run(feats, w, m, split_name=split_name,
-                                    n_iter=ex['n_iter'], lr=ex['lr'],
-                                    skip_adcc=skip_adcc, **_split_kwargs(spec))
-                    except Exception:
-                        traceback.print_exc()
-                        failures.append(tag)
+                    todo.append((tag, _oos_command(feats, w, m, split_name, spec, ex, skip_adcc)))
+
+    if not todo:
+        return []
+
+    env = dict(os.environ, OMP_NUM_THREADS='1', MKL_NUM_THREADS='1',
+               OPENBLAS_NUM_THREADS='1', PYTHONIOENCODING='utf-8')
+    log_dir = os.path.join(out_dir(gk), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    jobs = max(1, min(jobs, len(todo)))
+    print(f"{len(todo)} OOS runs, {jobs} in parallel. Logs: {log_dir}")
+
+    failures, done = [], 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = [pool.submit(_run_one, tag, cmd,
+                               _guard_output(os.path.join(log_dir, f'{tag}.log')), env)
+                   for tag, cmd in todo]
+        for fut in concurrent.futures.as_completed(futures):
+            tag, rc, secs = fut.result()
+            done += 1
+            status = 'ok' if rc == 0 else f'FAILED (exit {rc}, see log)'
+            print(f"[{time.strftime('%H:%M:%S')}] {done}/{len(todo)} {tag}: "
+                  f"{status}  {secs / 60:.1f} min")
+            if rc != 0:
+                failures.append(tag)
     return failures
 
 
@@ -162,6 +214,9 @@ def main():
     parser.add_argument('--only', choices=['diagnostic'], default=None,
                         help="'diagnostic': build features and run the diagnostic, no models")
     parser.add_argument('--skip-adcc', action='store_true')
+    parser.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) // 2),
+                        help="OOS runs in parallel (default: physical cores, "
+                             "i.e. half the logical CPU count)")
     parser.add_argument('--summary-only', action='store_true')
     args = parser.parse_args()
 
@@ -178,7 +233,7 @@ def main():
 
         if args.only != 'diagnostic':
             _stamp("Stage 4: OOS grid")
-            failures += run_oos_grid(gk, args.rebuild, args.skip_adcc)
+            failures += run_oos_grid(gk, args.rebuild, args.skip_adcc, args.jobs)
             if args.permutations:
                 _stamp("Stage 5: permutation tests")
                 failures += run_perm_grid(gk, args.rebuild)

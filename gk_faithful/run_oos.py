@@ -113,9 +113,12 @@ def main():
     parser.add_argument('--lag', type=int, default=None,
                         help="override timing.feature_lag (0 = thesis convention)")
     parser.add_argument('--skip-adcc', action='store_true')
+    parser.add_argument('--split-name', default=None,
+                        help="label used in the output file name (run_all passes its own)")
     args = parser.parse_args()
 
-    split_name = f"split{args.split_date}" if args.split_date else f"frac{int(args.train_frac*100)}"
+    split_name = args.split_name or (
+        f"split{args.split_date}" if args.split_date else f"frac{int(args.train_frac*100)}")
     run(args.features, args.window, args.m, split_name=split_name,
         train_frac=args.train_frac, split_date=args.split_date,
         n_iter=args.n_iter, lr=args.lr, lambda_reg=args.lambda_reg,
